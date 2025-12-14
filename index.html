@@ -4,35 +4,35 @@
     <meta charset="UTF-8">
     <title>Ev Gider Paneli</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- React 17 (Daha Stabil CDN) -->
+    
+    <!-- KÜTÜPHANELER -->
     <script crossorigin src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Firebase Compat -->
+    <!-- Firebase -->
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 </head>
 <body class="bg-slate-100">
 
-<!-- Yükleme ve Hata Ekranı -->
-<div id="status-box" style="padding: 20px; text-align: center; margin-top: 50px;">
-    <h2 style="font-size: 24px; color: #64748b;">Uygulama Yükleniyor...</h2>
-    <p style="color: #94a3b8;">Lütfen bekleyin, bağlantı kuruluyor.</p>
-    <div id="error-message" style="color: red; margin-top: 20px; font-weight: bold; display: none;"></div>
+<!-- YÜKLEME EKRANI -->
+<div id="status-box" style="padding: 40px; text-align: center; margin-top: 50px;">
+    <h2 style="font-size: 24px; color: #64748b; font-family: sans-serif;">Uygulama Yükleniyor...</h2>
+    <div id="error-message" style="color: white; background: red; padding: 15px; margin-top: 20px; font-weight: bold; border-radius: 8px; display: none;"></div>
 </div>
 
 <div id="root" style="display: none;"></div>
 
 <script>
-    // Global Hata Yakalayıcı
     window.onerror = function(msg, url, line) {
         document.getElementById('status-box').style.display = 'block';
         document.getElementById('root').style.display = 'none';
-        document.getElementById('error-message').style.display = 'block';
-        document.getElementById('error-message').innerHTML = 'HATA: ' + msg + '<br>Satır: ' + line;
+        var errBox = document.getElementById('error-message');
+        errBox.style.display = 'block';
+        errBox.innerHTML = 'BÜYÜK HATA: ' + msg + '<br>Satır: ' + line;
     };
 </script>
 
@@ -49,145 +49,441 @@
             measurementId: "G-T3XRGZ6H9B"
         };
 
-        if (!firebase.apps.length) {
-            firebase.initializeApp(firebaseConfig);
-        }
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
-
         const { useState, useEffect } = React;
 
+        const DEFAULT_TAGS = ["A-101", "Bim", "Migros", "File", "Şok", "Kafe", "Market", "Su", "Kira", "Aidat", "Fatura", "Ekmek", "Pazar", "Diğer"];
+
+        // DÖNEM HESAPLAMA (22'sinden 21'ine)
+        function getPeriodRange(dateObj) {
+            let year = dateObj.getFullYear();
+            let month = dateObj.getMonth();
+            let day = dateObj.getDate();
+            let start, end, label;
+
+            if (day > 21) {
+                start = new Date(year, month, 22);
+                end = new Date(year, month + 1, 21, 23, 59, 59);
+                let nextMonthName = new Date(year, month + 1, 1).toLocaleString('tr-TR', { month: 'long', year: 'numeric' });
+                label = nextMonthName + " Dönemi";
+            } else {
+                start = new Date(year, month - 1, 22);
+                end = new Date(year, month, 21, 23, 59, 59);
+                let currentMonthName = new Date(year, month, 1).toLocaleString('tr-TR', { month: 'long', year: 'numeric' });
+                label = currentMonthName + " Dönemi";
+            }
+            return { start, end, label };
+        }
+
         function App() {
+            // --- STATE ---
             const [user, setUser] = useState(null);
-            const [expenses, setExpenses] = useState([]);
-            const [loading, setLoading] = useState(true);
-            const [description, setDescription] = useState('');
+            const [sessionName, setSessionName] = useState(localStorage.getItem('deviceUser') || '');
+            const [showLogin, setShowLogin] = useState(!localStorage.getItem('deviceUser'));
+            
+            const [allExpenses, setAllExpenses] = useState([]);
+            const [logs, setLogs] = useState([]);
+            const [customTags, setCustomTags] = useState([]);
+            
+            // Görünüm State'leri
+            const [view, setView] = useState('main'); // 'main', 'logs', 'yearly'
+            
+            // Form State'leri
+            const [category, setCategory] = useState('Diğer'); // Seçilen Kategori
+            const [description, setDescription] = useState(''); // Yazılan Açıklama
             const [amount, setAmount] = useState('');
             const [payer, setPayer] = useState('Cihan');
             const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-            const [settlement, setSettlement] = useState(false);
+            
+            // Filtreleme State'leri
+            const [viewDate, setViewDate] = useState(new Date()); 
+            const [filterUser, setFilterUser] = useState('HEPSI');
+            const [filterCategories, setFilterCategories] = useState([]); // Çoklu seçim için array
 
+            // Auth
             useEffect(() => {
-                auth.signInAnonymously().catch(e => alert("Giriş Hatası: " + e.message));
+                auth.signInAnonymously().catch(e => alert(e.message));
                 return auth.onAuthStateChanged(u => setUser(u));
             }, []);
 
+            // Veri Dinleme
             useEffect(() => {
                 if(!user) return;
-                const unsub = db.collection('houseExpenses').orderBy('dateIso', 'desc').onSnapshot(snap => {
-                    const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
-                    setExpenses(data);
-                    setLoading(false);
-                    // Yükleme ekranını gizle, uygulamayı göster
+                
+                const unsubExp = db.collection('houseExpenses').orderBy('dateIso', 'desc').onSnapshot(snap => {
+                    setAllExpenses(snap.docs.map(d => ({id: d.id, ...d.data()})));
                     document.getElementById('status-box').style.display = 'none';
                     document.getElementById('root').style.display = 'block';
-                }, err => {
-                    alert("Veri Okuma Hatası: " + err.message);
                 });
-                return () => unsub();
-            }, [user]);
-            
-            useEffect(() => {
-                if(new Date().getDate() === 21) setSettlement(true);
-            }, []);
 
+                const unsubLogs = db.collection('houseLogs').orderBy('createdAt', 'desc').limit(50).onSnapshot(snap => {
+                    setLogs(snap.docs.map(d => ({id: d.id, ...d.data()})));
+                });
+
+                const unsubTags = db.collection('houseTags').orderBy('name').onSnapshot(snap => {
+                    setCustomTags(snap.docs.map(d => d.data().name));
+                });
+
+                return () => { unsubExp(); unsubLogs(); unsubTags(); };
+            }, [user]);
+
+            // Log Ekleme
+            const addLog = (action, detail) => {
+                db.collection('houseLogs').add({
+                    user: sessionName || 'Bilinmeyen',
+                    action: action,
+                    detail: detail,
+                    date: new Date().toLocaleString('tr-TR'),
+                    createdAt: Date.now()
+                });
+            };
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                const nameInput = e.target.elements.name.value;
+                if(nameInput) {
+                    localStorage.setItem('deviceUser', nameInput);
+                    setSessionName(nameInput);
+                    setShowLogin(false);
+                }
+            };
+
+            // Harcama Ekleme
             const addExpense = async (e) => {
                 e.preventDefault();
-                if(!description || !amount) return;
+                if(!amount) { alert("Lütfen tutar girin."); return; }
+                
+                // Eğer açıklama boşsa, kategori adını açıklama yapmasın, boş kalsın veya kategori görünsün
+                const finalDesc = description || ""; 
+
                 try {
                     await db.collection('houseExpenses').add({
-                        description,
+                        category: category, // YENİ: Kategori ayrı
+                        description: finalDesc, // YENİ: Açıklama ayrı
                         amount: parseFloat(amount),
                         payer,
                         date: new Date(selectedDate).toLocaleDateString('tr-TR'),
                         dateIso: selectedDate,
                         createdAt: Date.now()
                     });
+                    
+                    addLog("Harcama Eklendi", `${payer} - [${category}] ${finalDesc} (${amount} TL)`);
                     setDescription('');
                     setAmount('');
-                } catch(e) { alert("Ekleme Hatası: " + e.message); }
+                    setCategory('Diğer'); // Sıfırla
+                } catch(e) { alert("Hata: " + e.message); }
             };
 
-            const deleteExpense = async (id) => {
-                if(confirm('Silinsin mi?')) await db.collection('houseExpenses').doc(id).delete();
+            const deleteExpense = async (id, cat, desc, amt, who) => {
+                if(confirm('Bu kayıt silinsin mi?')) {
+                    await db.collection('houseExpenses').doc(id).delete();
+                    addLog("Harcama Silindi", `${who} - [${cat}] ${desc} (${amt} TL)`);
+                }
             };
 
-            // Hesaplamalar
-            const cihanTotal = expenses.filter(e => e.payer === 'Cihan').reduce((a, b) => a + b.amount, 0);
-            const bayramTotal = expenses.filter(e => e.payer === 'Bayram').reduce((a, b) => a + b.amount, 0);
-            const total = cihanTotal + bayramTotal;
+            const addNewTag = async () => {
+                const newTag = prompt("Yeni kategori adı (Örn: Taksi):");
+                if (newTag) {
+                    await db.collection('houseTags').add({ name: newTag });
+                    addLog("Kategori Eklendi", newTag);
+                }
+            };
+
+            // --- FILTRELEME VE HESAPLAMA ---
+            const periodRange = getPeriodRange(viewDate);
+            const allTags = [...DEFAULT_TAGS, ...customTags];
+
+            // 1. Dönem Filtresi
+            const expensesInPeriod = allExpenses.filter(ex => {
+                if (!ex.dateIso) return false; 
+                const exDate = new Date(ex.dateIso);
+                return exDate >= periodRange.start && exDate <= periodRange.end;
+            });
+
+            // 2. Kullanıcı ve Kategori Filtresi
+            const filteredExpenses = expensesInPeriod.filter(ex => {
+                const userMatch = filterUser === 'HEPSI' ? true : ex.payer === filterUser;
+                const catMatch = filterCategories.length === 0 ? true : filterCategories.includes(ex.category || 'Diğer');
+                return userMatch && catMatch;
+            });
+
+            // Filtrelenmiş Toplamlar (Ekranda gösterilen listenin toplamı)
+            const filteredTotal = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
+
+            // Genel Dengeler (Filtreden bağımsız, o dönemdeki borç hesabı için)
+            const cihanTotal = expensesInPeriod.filter(e => e.payer === 'Cihan').reduce((a, b) => a + b.amount, 0);
+            const bayramTotal = expensesInPeriod.filter(e => e.payer === 'Bayram').reduce((a, b) => a + b.amount, 0);
             const diff = (cihanTotal - bayramTotal) / 2;
-            
             const fmt = (n) => new Intl.NumberFormat('tr-TR', {style:'currency', currency:'TRY'}).format(n);
+
+            const isSettlementDay = new Date().getDate() === 21 && 
+                                    new Date().getMonth() === viewDate.getMonth();
+
+            // --- YILLIK ÖZET HESAPLAMA ---
+            const calculateYearlyStats = () => {
+                const stats = {};
+                // Tüm zamanların verisini tarıyoruz
+                allExpenses.forEach(ex => {
+                    const d = new Date(ex.dateIso);
+                    const monthKey = d.toLocaleString('tr-TR', { month: 'long', year: 'numeric' }); // Örn: Aralık 2024
+                    
+                    // Sıralama için sayısal anahtar
+                    const sortKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+                    if (!stats[sortKey]) {
+                        stats[sortKey] = { label: monthKey, total: 0, count: 0 };
+                    }
+                    stats[sortKey].total += ex.amount;
+                    stats[sortKey].count += 1;
+                });
+                
+                // Tarihe göre sırala (Yeniden eskiye)
+                return Object.entries(stats)
+                    .sort((a, b) => b[0].localeCompare(a[0]))
+                    .map(([key, val]) => val);
+            };
+
+            const toggleCategoryFilter = (tag) => {
+                if (filterCategories.includes(tag)) {
+                    setFilterCategories(filterCategories.filter(t => t !== tag));
+                } else {
+                    setFilterCategories([...filterCategories, tag]);
+                }
+            };
+
+            // Login Modal
+            if (showLogin) {
+                return (
+                    <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-4 z-50">
+                        <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm text-center">
+                            <h2 className="text-xl font-bold mb-4">👋 Hoş Geldin!</h2>
+                            <p className="text-slate-500 mb-4 text-sm">Cihazı kimin kullandığını seç:</p>
+                            <form onSubmit={handleLogin}>
+                                <input name="name" type="text" placeholder="Örn: Cihan Telefon" className="w-full p-3 border rounded-lg mb-4" autoFocus />
+                                <button className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold">Kaydet</button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div className="max-w-md mx-auto p-4 pb-20 space-y-4 font-sans text-slate-800">
-                    <div className="bg-white p-4 rounded-xl shadow border-l-4 border-blue-500">
-                        <h1 className="text-2xl font-bold flex items-center gap-2">🏠 Ev Giderleri <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Online</span></h1>
-                    </div>
-
-                    {settlement && <div className="bg-red-100 text-red-800 p-4 rounded-xl font-bold border border-red-300">⚠️ Bugün Hesap Günü (Ayın 21'i)!</div>}
-
-                    <div className="bg-white p-4 rounded-xl shadow space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="bg-slate-50 p-3 rounded border">
-                                <div className="text-xs text-slate-500">Cihan</div>
-                                <div className="text-xl font-bold">{fmt(cihanTotal)}</div>
-                            </div>
-                            <div className="bg-slate-50 p-3 rounded border">
-                                <div className="text-xs text-slate-500">Bayram</div>
-                                <div className="text-xl font-bold">{fmt(bayramTotal)}</div>
-                            </div>
+                    
+                    {/* ÜST BAR */}
+                    <div className="bg-white p-3 rounded-xl shadow border-l-4 border-blue-500 flex justify-between items-center">
+                        <div>
+                            <h1 className="text-lg font-bold">🏠 Ev Giderleri</h1>
+                            <div className="text-xs text-slate-400">👤 {sessionName}</div>
                         </div>
-                        <div className="bg-slate-800 text-white p-4 rounded-xl">
-                            {diff > 0 ? 
-                                <div><div className="text-xs opacity-70">Ödenmesi Gereken</div><div className="text-lg font-bold text-orange-400">Bayram ➔ Cihan: {fmt(diff)}</div></div> :
-                             diff < 0 ?
-                                <div><div className="text-xs opacity-70">Ödenmesi Gereken</div><div className="text-lg font-bold text-orange-400">Cihan ➔ Bayram: {fmt(Math.abs(diff))}</div></div> :
-                                <div className="text-green-400 font-bold">✅ Borç Yok, Eşit!</div>
-                            }
-                        </div>
-                    </div>
-
-                    <form onSubmit={addExpense} className="bg-white p-4 rounded-xl shadow space-y-3">
-                        <h3 className="font-bold text-sm">Harcama Ekle</h3>
-                        <input type="text" placeholder="Ne aldın?" value={description} onChange={e=>setDescription(e.target.value)} className="w-full p-3 border rounded-lg" />
                         <div className="flex gap-2">
-                            <input type="number" placeholder="0.00" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full p-3 border rounded-lg" />
-                            <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} className="w-full p-3 border rounded-lg" />
+                            <button onClick={() => setView('yearly')} className={`text-xs px-2 py-1 rounded border ${view === 'yearly' ? 'bg-blue-600 text-white' : 'bg-slate-50'}`}>
+                                📅 Yıllık
+                            </button>
+                            <button onClick={() => setView(view === 'main' ? 'logs' : 'main')} className="text-2xl">
+                                {view === 'main' ? '📜' : '🏠'}
+                            </button>
                         </div>
-                        <select value={payer} onChange={e=>setPayer(e.target.value)} className="w-full p-3 border rounded-lg bg-white">
-                            <option value="Cihan">Cihan Ödedi</option>
-                            <option value="Bayram">Bayram Ödedi</option>
-                        </select>
-                        <button className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold">➕ Ekle</button>
-                    </form>
+                    </div>
 
-                    <div className="space-y-2">
-                        <h3 className="font-bold text-sm px-1">Geçmiş</h3>
-                        {expenses.map(ex => (
-                            <div key={ex.id} className="bg-white p-3 rounded-xl shadow-sm flex justify-between items-center border border-slate-50">
-                                <div>
-                                    <div className="font-bold">{ex.description}</div>
-                                    <div className="text-xs text-slate-500">{ex.date} • {ex.payer}</div>
+                    {/* --- YILLIK GÖRÜNÜM --- */}
+                    {view === 'yearly' && (
+                        <div className="bg-white rounded-xl shadow p-4">
+                            <h3 className="font-bold text-lg mb-4 border-b pb-2 flex justify-between">
+                                📅 Yıllık Özet
+                                <button onClick={()=>setView('main')} className="text-xs bg-gray-200 px-2 rounded">Kapat</button>
+                            </h3>
+                            <div className="space-y-3">
+                                {calculateYearlyStats().map((stat, idx) => (
+                                    <div key={idx} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border">
+                                        <div>
+                                            <div className="font-bold text-slate-700">{stat.label}</div>
+                                            <div className="text-xs text-slate-400">{stat.count} harcama</div>
+                                        </div>
+                                        <div className="text-lg font-bold text-blue-600">{fmt(stat.total)}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- LOG GÖRÜNÜMÜ --- */}
+                    {view === 'logs' && (
+                        <div className="bg-white rounded-xl shadow p-4">
+                            <h3 className="font-bold text-lg mb-4 border-b pb-2">📜 İşlem Kayıtları</h3>
+                            <div className="space-y-3 max-h-[70vh] overflow-y-auto">
+                                {logs.map(log => (
+                                    <div key={log.id} className="text-sm p-3 bg-slate-50 rounded-lg border">
+                                        <div className="flex justify-between font-bold">
+                                            <span className={log.action.includes('Sil') ? 'text-red-500':'text-blue-500'}>{log.action}</span>
+                                            <span className="text-slate-400 text-xs">{log.date}</span>
+                                        </div>
+                                        <div className="mt-1">{log.detail}</div>
+                                        <div className="text-xs text-slate-400 mt-1">Cihaz: {log.user}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- ANA GÖRÜNÜM --- */}
+                    {view === 'main' && (
+                        <>
+                            {/* DÖNEM GEZİNTİSİ */}
+                            <div className="bg-slate-800 text-white p-3 rounded-xl flex justify-between items-center shadow-lg">
+                                <button onClick={() => {
+                                    const newDate = new Date(viewDate);
+                                    newDate.setMonth(newDate.getMonth() - 1);
+                                    setViewDate(newDate);
+                                }} className="p-2 hover:bg-slate-700 rounded-lg">◀</button>
+                                <div className="text-center">
+                                    <div className="text-xs text-slate-400">Dönem</div>
+                                    <div className="font-bold text-sm">{periodRange.label}</div>
                                 </div>
-                                <div className="flex items-center gap-3">
-                                    <span className="font-bold">{fmt(ex.amount)}</span>
-                                    <button onClick={()=>deleteExpense(ex.id)} className="text-red-300 hover:text-red-600">🗑️</button>
+                                <button onClick={() => {
+                                    const newDate = new Date(viewDate);
+                                    newDate.setMonth(newDate.getMonth() + 1);
+                                    setViewDate(newDate);
+                                }} className="p-2 hover:bg-slate-700 rounded-lg">▶</button>
+                            </div>
+
+                            {/* ÖZET KARTLARI (Borç Durumu) */}
+                            <div className="bg-white p-4 rounded-xl shadow space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="bg-slate-50 p-2 rounded border text-center">
+                                        <div className="text-xs text-slate-500">Cihan</div>
+                                        <div className="font-bold">{fmt(cihanTotal)}</div>
+                                    </div>
+                                    <div className="bg-slate-50 p-2 rounded border text-center">
+                                        <div className="text-xs text-slate-500">Bayram</div>
+                                        <div className="font-bold">{fmt(bayramTotal)}</div>
+                                    </div>
+                                </div>
+                                <div className="bg-slate-800 text-white p-3 rounded-xl text-center text-sm">
+                                    {diff > 0 ? 
+                                        <span>Ödenmesi Gereken: <span className="font-bold text-orange-400">Bayram ➔ Cihan: {fmt(diff)}</span></span> :
+                                     diff < 0 ?
+                                        <span>Ödenmesi Gereken: <span className="font-bold text-orange-400">Cihan ➔ Bayram: {fmt(Math.abs(diff))}</span></span> :
+                                        <span className="text-green-400 font-bold">✅ Borç Yok, Eşit!</span>
+                                    }
                                 </div>
                             </div>
-                        ))}
-                    </div>
+
+                            {/* EKLEME FORMU */}
+                            <form onSubmit={addExpense} className="bg-white p-4 rounded-xl shadow space-y-3 relative">
+                                <h3 className="font-bold text-sm text-slate-700">Harcama Ekle</h3>
+                                
+                                {/* KATEGORİ SEÇİMİ */}
+                                <div className="mb-2">
+                                    <label className="text-xs text-slate-400 mb-1 block">1. Kategori Seç:</label>
+                                    <div className="flex flex-wrap gap-2">
+                                        {allTags.map(tag => (
+                                            <button 
+                                                key={tag} 
+                                                type="button" 
+                                                onClick={() => setCategory(tag)}
+                                                className={`px-2 py-1 text-xs rounded border transition ${category === tag ? 'bg-blue-600 text-white border-blue-600 shadow-md transform scale-105' : 'bg-gray-50 text-gray-600 border-gray-200'}`}
+                                            >
+                                                {tag}
+                                            </button>
+                                        ))}
+                                        <button type="button" onClick={addNewTag} className="px-2 py-1 text-xs bg-green-50 text-green-600 border border-green-200 font-bold">+ Ekle</button>
+                                    </div>
+                                </div>
+
+                                {/* AÇIKLAMA GİRİŞİ */}
+                                <div>
+                                    <label className="text-xs text-slate-400 mb-1 block">2. Açıklama (İsteğe bağlı):</label>
+                                    <input type="text" placeholder="Örn: 2 Koli Yumurta" value={description} onChange={e=>setDescription(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+
+                                <div className="flex gap-2">
+                                    <div className="flex-1">
+                                        <label className="text-xs text-slate-400 mb-1 block">3. Tutar:</label>
+                                        <input type="number" placeholder="0.00" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full p-3 border rounded-lg" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-xs text-slate-400 mb-1 block">4. Tarih:</label>
+                                        <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} className="w-full p-3 border rounded-lg bg-white" />
+                                    </div>
+                                </div>
+
+                                <label className="text-xs text-slate-400 mb-1 block">5. Ödeyen:</label>
+                                <select value={payer} onChange={e=>setPayer(e.target.value)} className="w-full p-3 border rounded-lg bg-white mb-2">
+                                    <option value="Cihan">Cihan Ödedi</option>
+                                    <option value="Bayram">Bayram Ödedi</option>
+                                </select>
+                                
+                                <button className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg">
+                                    {category === 'Diğer' && !description ? 'Lütfen Bilgi Girin' : `➕ ${category} Ekle`}
+                                </button>
+                            </form>
+
+                            {/* LİSTE VE FİLTRELER */}
+                            <div className="space-y-2 pb-10">
+                                <div className="flex flex-col gap-2 bg-white p-3 rounded-xl shadow-sm border">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="font-bold text-sm text-slate-700">Filtrele</h3>
+                                        <span className="text-xs font-bold text-blue-600">Seçili Toplam: {fmt(filteredTotal)}</span>
+                                    </div>
+                                    
+                                    {/* Kategori Filtresi (Çoklu Seçim) */}
+                                    <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                                        {allTags.map(tag => (
+                                            <button 
+                                                key={tag} 
+                                                onClick={() => toggleCategoryFilter(tag)}
+                                                className={`px-2 py-1 text-[10px] rounded border transition ${filterCategories.includes(tag) ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-500'}`}
+                                            >
+                                                {tag}
+                                            </button>
+                                        ))}
+                                        {filterCategories.length > 0 && <button onClick={()=>setFilterCategories([])} className="px-2 py-1 text-[10px] text-red-500 underline">Temizle</button>}
+                                    </div>
+
+                                    {/* Kişi Filtresi */}
+                                    <div className="flex bg-slate-100 rounded p-1 self-start">
+                                        <button onClick={() => setFilterUser('HEPSI')} className={`px-2 py-1 text-xs rounded ${filterUser === 'HEPSI' ? 'bg-white shadow text-black' : 'text-slate-500'}`}>Hepsi</button>
+                                        <button onClick={() => setFilterUser('Cihan')} className={`px-2 py-1 text-xs rounded ${filterUser === 'Cihan' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'}`}>Cihan</button>
+                                        <button onClick={() => setFilterUser('Bayram')} className={`px-2 py-1 text-xs rounded ${filterUser === 'Bayram' ? 'bg-white shadow text-emerald-600' : 'text-slate-500'}`}>Bayram</button>
+                                    </div>
+                                </div>
+
+                                {filteredExpenses.length === 0 ? 
+                                    <div className="text-center py-8 text-gray-400 bg-white rounded-xl border border-dashed">
+                                        Kayıt bulunamadı.
+                                    </div> 
+                                : filteredExpenses.map(ex => (
+                                    <div key={ex.id} className="bg-white p-3 rounded-xl shadow-sm flex justify-between items-center border border-slate-50">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-bold border border-blue-100">
+                                                    {ex.category || 'Diğer'}
+                                                </span>
+                                                <span className="font-bold text-slate-800 text-sm">{ex.description}</span>
+                                            </div>
+                                            <div className="text-xs text-slate-500 mt-0.5">{ex.date} • {ex.payer}</div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-bold text-slate-700">{fmt(ex.amount)}</span>
+                                            <button onClick={()=>deleteExpense(ex.id, ex.category || 'Genel', ex.description, ex.amount, ex.payer)} className="text-slate-300 hover:text-red-500 text-lg p-1">🗑️</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    )}
                 </div>
             );
         }
 
         ReactDOM.render(<App />, document.getElementById('root'));
-
     } catch (err) {
         document.getElementById('status-box').style.display = 'block';
         document.getElementById('error-message').style.display = 'block';
-        document.getElementById('error-message').innerHTML = 'REACT HATASI: ' + err.message;
+        document.getElementById('error-message').innerHTML = 'HATA: ' + err.message;
     }
 </script>
 
